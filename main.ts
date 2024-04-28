@@ -1,109 +1,107 @@
-import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting } from 'obsidian';
-
-// Remember to rename these classes and interfaces!
+import {
+	App,
+	MarkdownView,
+	Plugin,
+	PluginSettingTab,
+	Setting,
+	WorkspaceLeaf,
+	debounce,
+} from "obsidian";
 
 interface MyPluginSettings {
-	mySetting: string;
+	debounceTimeout: number;
+	tags: string[];
 }
 
 const DEFAULT_SETTINGS: MyPluginSettings = {
-	mySetting: 'default'
-}
+	debounceTimeout: 100,
+	tags: ["HOC", "MOC"],
+};
 
 export default class MyPlugin extends Plugin {
 	settings: MyPluginSettings;
 
-	async onload() {
-		await this.loadSettings();
-
-		// This creates an icon in the left ribbon.
-		const ribbonIconEl = this.addRibbonIcon('dice', 'Sample Plugin', (evt: MouseEvent) => {
-			// Called when the user clicks the icon.
-			new Notice('This is a notice!');
-		});
-		// Perform additional things with the ribbon
-		ribbonIconEl.addClass('my-plugin-ribbon-class');
-
-		// This adds a status bar item to the bottom of the app. Does not work on mobile apps.
-		const statusBarItemEl = this.addStatusBarItem();
-		statusBarItemEl.setText('Status Bar Text');
-
-		// This adds a simple command that can be triggered anywhere
-		this.addCommand({
-			id: 'open-sample-modal-simple',
-			name: 'Open sample modal (simple)',
-			callback: () => {
-				new SampleModal(this.app).open();
+	async checkForTag(
+		view: MarkdownView,
+		allowTags: string[]
+	): Promise<boolean> {
+		try {
+			const fileContent = view.editor.getValue();
+			// 파일 내용에서 첫 번째 "---"로 시작하는 블록을 찾음
+			const frontMatterBlock = fileContent.match(/^---\n([\s\S]*?)\n---/);
+			if (!frontMatterBlock) {
+				return false;
 			}
-		});
-		// This adds an editor command that can perform some operation on the current editor instance
-		this.addCommand({
-			id: 'sample-editor-command',
-			name: 'Sample editor command',
-			editorCallback: (editor: Editor, view: MarkdownView) => {
-				console.log(editor.getSelection());
-				editor.replaceSelection('Sample Editor Command');
-			}
-		});
-		// This adds a complex command that can check whether the current state of the app allows execution of the command
-		this.addCommand({
-			id: 'open-sample-modal-complex',
-			name: 'Open sample modal (complex)',
-			checkCallback: (checking: boolean) => {
-				// Conditions to check
-				const markdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
-				if (markdownView) {
-					// If checking is true, we're simply "checking" if the command can be run.
-					// If checking is false, then we want to actually perform the operation.
-					if (!checking) {
-						new SampleModal(this.app).open();
+
+			if (frontMatterBlock) {
+				// YAML 형태의 문자열에서 "tags:" 이후의 내용을 추출
+				const tagsMatch =
+					frontMatterBlock[1].match(/tags:\n(.*?)\n(?=\w)/s);
+				if (tagsMatch) {
+					// "tags" 섹션에서 각 태그를 배열로 변환
+					const tags = tagsMatch[1]
+						.split("\n")
+						.map((tag) => tag.trim().replace(/^- /, ""));
+					// new Notice(`tags: ${tags}`, 5000);
+					// 태그 중 하나라도 allowTags 배열에 포함되어 있으면 true 반환
+					if (tags.some((tag) => allowTags.includes(tag))) {
+						return true;
 					}
-
-					// This command will only show up in Command Palette when the check function returns true
-					return true;
 				}
 			}
-		});
+			return false;
+		} catch (error) {
+			console.error(`Error reading file: ${error}`);
+		}
+		return false;
+	}
 
-		// This adds a settings tab so the user can configure various aspects of the plugin
+	forceReadingView = async (leaf: WorkspaceLeaf) => {
+		let view = leaf.view instanceof MarkdownView ? leaf.view : null;
+		if (view) {
+			const containTags = await this.checkForTag(
+				view,
+				this.settings.tags
+			);
+			// new Notice(`containTags: ${containTags}`, 5000);
+
+			// reading view 일때 mode: preview / soruce: false
+			// editing view 일때 mode: source / source: false
+			let state = leaf.getViewState();
+			state.state["mode"] = containTags ? "preview" : "source";
+			await leaf.setViewState(state);
+		}
+	};
+
+	async onload() {
+		await this.loadSettings();
 		this.addSettingTab(new SampleSettingTab(this.app, this));
 
-		// If the plugin hooks up any global DOM events (on parts of the app that doesn't belong to this plugin)
-		// Using this function will automatically remove the event listener when this plugin is disabled.
-		this.registerDomEvent(document, 'click', (evt: MouseEvent) => {
-			console.log('click', evt);
-		});
-
-		// When registering intervals, this function will automatically clear the interval when the plugin is disabled.
-		this.registerInterval(window.setInterval(() => console.log('setInterval'), 5 * 60 * 1000));
+		this.registerEvent(
+			this.app.workspace.on(
+				"active-leaf-change",
+				this.settings.debounceTimeout === 0
+					? this.forceReadingView
+					: debounce(
+							this.forceReadingView,
+							this.settings.debounceTimeout
+					  )
+			)
+		);
 	}
 
-	onunload() {
-
-	}
+	onunload() {}
 
 	async loadSettings() {
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+		this.settings = Object.assign(
+			{},
+			DEFAULT_SETTINGS,
+			await this.loadData()
+		);
 	}
 
 	async saveSettings() {
 		await this.saveData(this.settings);
-	}
-}
-
-class SampleModal extends Modal {
-	constructor(app: App) {
-		super(app);
-	}
-
-	onOpen() {
-		const {contentEl} = this;
-		contentEl.setText('Woah!');
-	}
-
-	onClose() {
-		const {contentEl} = this;
-		contentEl.empty();
 	}
 }
 
@@ -116,19 +114,40 @@ class SampleSettingTab extends PluginSettingTab {
 	}
 
 	display(): void {
-		const {containerEl} = this;
+		const { containerEl } = this;
 
 		containerEl.empty();
 
 		new Setting(containerEl)
-			.setName('Setting #1')
-			.setDesc('It\'s a secret')
-			.addText(text => text
-				.setPlaceholder('Enter your secret')
-				.setValue(this.plugin.settings.mySetting)
-				.onChange(async (value) => {
-					this.plugin.settings.mySetting = value;
-					await this.plugin.saveSettings();
-				}));
+			.setName("Tags")
+			.setDesc(
+				"Enter the tags to set the files you want to force to view in reading view, separated by commas. (EX: MOC, HOC)"
+			)
+			.addText((text) =>
+				text
+					.setPlaceholder(DEFAULT_SETTINGS.tags.join(", "))
+					.setValue(String(this.plugin.settings.tags.join(", ")))
+					.onChange(async (value) => {
+						this.plugin.settings.tags = value
+							.split(",")
+							.map((tag) => tag.replace("#", "").trim());
+						await this.plugin.saveSettings();
+					})
+			);
+
+		new Setting(containerEl)
+			.setName("DebounceTimeout")
+			.setDesc(
+				"Set the debounce timeout for the active leaf change event. (0 for no debounce)"
+			)
+			.addText((text) =>
+				text
+					.setPlaceholder(DEFAULT_SETTINGS.debounceTimeout.toString())
+					.setValue(String(this.plugin.settings.debounceTimeout))
+					.onChange(async (value) => {
+						this.plugin.settings.debounceTimeout = parseInt(value);
+						await this.plugin.saveSettings();
+					})
+			);
 	}
 }
